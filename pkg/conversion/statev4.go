@@ -3,17 +3,14 @@ package conversion
 import (
 	"encoding/base64"
 	"encoding/json"
+
 	"github.com/pkg/errors"
 )
 
 const (
-	AnnotationKeyStateMeta = "tf.crossplane.io/state-meta"
-)
-
-const (
-	errCannotParseState = "cannot parse state"
-	errCannotDecodeMetadata = "cannot decode state metadata"
-	errInvalidState = "invalid state file"
+	errCannotParseState       = "cannot parse state"
+	errCannotDecodeMetadata   = "cannot decode state metadata"
+	errInvalidState           = "invalid state file"
 	errFmtIncompatibleVersion = "state version not supported, expecting 4 found %d"
 
 	errNotOneResource = "state file should contain exactly 1 resource"
@@ -73,7 +70,7 @@ func ReadStateV4(data []byte) (*StateV4, error) {
 	return st, errors.Wrap(st.Validate(), errInvalidState)
 }
 
-func BuildStateV4(encodedMetadata string, attributes, attributesSensitive json.RawMessage) (*StateV4, error) {
+func BuildStateV4(encodedMetadata string, attributesSensitive json.RawMessage) (*StateV4, error) {
 	st := &StateV4{}
 
 	m, err := base64.StdEncoding.DecodeString(encodedMetadata)
@@ -89,7 +86,6 @@ func BuildStateV4(encodedMetadata string, attributes, attributesSensitive json.R
 		return nil, errors.Wrap(err, errInvalidState)
 	}
 
-	st.Resources[0].Instances[0].AttributesRaw = attributes
 	st.Resources[0].Instances[0].AttributeSensitivePaths = attributesSensitive
 
 	return st, nil
@@ -114,13 +110,16 @@ func (st *StateV4) Validate() error {
 	return nil
 }
 
-func (st *StateV4) GetResourceAttributes() (json.RawMessage, error) {
-	return st.Resources[0].Instances[0].AttributesRaw, nil
+func (st *StateV4) GetAttributes() json.RawMessage {
+	return st.Resources[0].Instances[0].AttributesRaw
 }
 
-func (st *StateV4) GetEncodedMetadata() (string, error) {
+func (st *StateV4) GetSensitiveAttributes() json.RawMessage {
+	return st.Resources[0].Instances[0].AttributeSensitivePaths
+}
+
+func (st *StateV4) GetEncodedState() (string, error) {
 	// TODO(hasan): do we need a deep copy, probably
-	st.Resources[0].Instances[0].AttributesRaw = nil
 	st.Resources[0].Instances[0].AttributeSensitivePaths = nil
 	b, err := json.Marshal(st)
 	if err != nil {

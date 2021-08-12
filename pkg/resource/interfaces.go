@@ -1,16 +1,16 @@
 package resource
 
 import (
-	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
 )
 
 // TerraformStateHandler handles terraform state
 type TerraformStateHandler interface {
-	GetState() ([]byte, error)
-	ConsumeState(data []byte) (managed.ConnectionDetails, error)
+	GetObservation() ([]byte, error)
+	SetObservation(data []byte) error
 
-	GetAttributes() ([]byte, error)
+	GetParameters() ([]byte, error)
+	SetParameters(data []byte) error
 }
 
 type TerraformMetadataProvider interface {
