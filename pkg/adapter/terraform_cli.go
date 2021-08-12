@@ -2,7 +2,11 @@ package adapter
 
 import (
 	"context"
-	"fmt"
+
+	"github.com/crossplane-contrib/terrajet/pkg/meta"
+
+	"github.com/crossplane-contrib/terrajet/pkg/conversion"
+	"k8s.io/apimachinery/pkg/util/json"
 
 	"github.com/pkg/errors"
 
@@ -32,81 +36,76 @@ func NewTerraformCli(l logging.Logger, providerConfig []byte, tr resource.Terraf
 	}
 }
 
-// Exists is a Terraform Cli implementation for Exists function of Adapter interface.
-func (t *TerraformCli) Exists(ctx context.Context, tr resource.Terraformed) (bool, error) {
-	fmt.Println("Terraform Cli adapter checking if exists...")
-	return true, nil
-}
+func (t *TerraformCli) Observe(ctx context.Context, tr resource.Terraformed) (ObserveResult, error) {
+	// TODO(hasan): Need to get refreshed state once cli interface has that functionality
+	stEnc := meta.GetState(tr)
+	st, err := conversion.BuildStateV4(stEnc, nil)
+	if err != nil {
+		return ObserveResult{}, errors.Wrap(err, "cannot build state")
+	}
 
-// UpdateStatus is a Terraform Cli implementation for UpdateStatus function of Adapter interface.
-func (t *TerraformCli) UpdateStatus(ctx context.Context, tr resource.Terraformed) error {
-	/*if err := tr.SetObservation([]byte{}); err != nil {
-		return errors.Wrap(err, "failed to set observation")
-	}*/
-	fmt.Println("Terraform Cli adapter updating status...")
-	return nil
-}
+	if err = tr.SetParameters(st.GetAttributes()); err != nil {
+		return ObserveResult{}, errors.Wrap(err, "cannot set parameters")
+	}
 
-// LateInitialize is a Terraform Cli implementation for LateInitialize function of Adapter interface.
-func (t *TerraformCli) LateInitialize(ctx context.Context, tr resource.Terraformed) (bool, error) {
-	/*if err := tr.SetParameters([]byte{}); err != nil {
-		return false, errors.Wrap(err, "failed to set parameters")
-	}*/
-	fmt.Println("Terraform Cli adapter late initializing...")
-	return true, nil
-}
+	if err = tr.SetObservation(st.GetAttributes()); err != nil {
+		return ObserveResult{}, errors.Wrap(err, "cannot set parameters")
+	}
 
-// IsReady is a Terraform Cli implementation for IsReady function of Adapter interface.
-func (t *TerraformCli) IsReady(ctx context.Context, tr resource.Terraformed) (bool, error) {
-	fmt.Println("Terraform Cli adapter checking if ready...")
-	return true, nil
-}
-
-// IsUpToDate is a Terraform Cli implementation for IsUpToDate function of Adapter interface.
-func (t *TerraformCli) IsUpToDate(ctx context.Context, tr resource.Terraformed) (bool, error) {
-	fmt.Println("Terraform Cli adapter checking if up to date...")
-	return false, nil
-}
-
-// GetConnectionDetails is a Terraform Cli implementation for GetConnectionDetails function of Adapter interface.
-func (t *TerraformCli) GetConnectionDetails(ctx context.Context, tr resource.Terraformed) (managed.ConnectionDetails, error) {
-	fmt.Println("Terraform Cli adapter returning connection details...")
-	return managed.ConnectionDetails{}, nil
+	return ObserveResult{
+		Completed:         true,
+		State:             "",
+		ConnectionDetails: nil,
+		UpToDate:          true,
+		Exists:            true,
+		LateInitialized:   false,
+	}, nil
 }
 
 func (t *TerraformCli) Create(ctx context.Context, tr resource.Terraformed) (CreateResult, error) {
-	attr, err := tr.GetAttributes()
+	attr, err := tr.GetParameters()
+
+	res := CreateResult{}
 	if err != nil {
-		return CreateResult{}, errors.Wrap(err, "failed to get attributes")
+		return res, errors.Wrap(err, "failed to get attributes")
 	}
 
-	tfc, err := t.builderBase.
-		WithResourceBody(attr).
-		BuildCreateClient()
+	tfc, err := t.builderBase.WithResourceBody(attr).BuildCreateClient()
 
 	if err != nil {
-		return CreateResult{}, errors.Wrap(err, "cannot build create client")
+		return res, errors.Wrap(err, "cannot build create client")
 	}
 
 	completed, err := tfc.Create()
 	if err != nil {
-		return CreateResult{}, errors.Wrap(err, "create failed with")
+		return res, errors.Wrap(err, "create failed with")
 	}
 
 	if !completed {
-		return CreateResult{}, errors.New("create in progress")
+		return res, nil
 	}
+	res.Completed = true
 
-	st := tfc.GetState()
-	conn, err := tr.ConsumeState(st)
+	stRaw := tfc.GetState()
+	st, err := conversion.ReadStateV4(stRaw)
 	if err != nil {
-		return CreateResult{}, errors.Wrap(err, "failed to consume state")
+		return res, errors.Wrap(err, "cannot parse state")
 	}
 
-	return CreateResult{
-		Completed:         true,
-		ConnectionDetails: conn,
-	}, nil
+	if res.State, err = st.GetEncodedState(); err != nil {
+		return res, errors.Wrap(err, "cannot get encoded state")
+	}
+
+	conn := managed.ConnectionDetails{}
+	sensitive := st.GetSensitiveAttributes()
+	if sensitive != nil {
+		if err = json.Unmarshal(sensitive, &conn); err != nil {
+			return res, errors.Wrap(err, "cannot parse connection details")
+		}
+	}
+	res.ConnectionDetails = conn
+
+	return res, nil
 }
 
 // Update is a Terraform Cli implementation for Apply function of Adapter interface.
