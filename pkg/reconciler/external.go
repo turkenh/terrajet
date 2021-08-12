@@ -5,13 +5,13 @@ import (
 
 	"github.com/pkg/errors"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/pkg/logging"
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	xpresource "github.com/crossplane/crossplane-runtime/pkg/resource"
 
+	"github.com/crossplane-contrib/terrajet/pkg/adapter"
 	"github.com/crossplane-contrib/terrajet/pkg/resource"
-	"github.com/crossplane-contrib/terrajet/pkg/scheduler"
 )
 
 const (
@@ -19,77 +19,53 @@ const (
 )
 
 // NewTerraformExternal returns a terraform external client
-func NewTerraformExternal(e scheduler.Scheduler) *TerraformExternal {
-	return &TerraformExternal{
-		executor: e,
+func NewTerraformExternal(l logging.Logger, providerConfig []byte, mg xpresource.Managed) (*TerraformExternal, error) {
+	tr, ok := mg.(resource.Terraformed)
+	if !ok {
+		return nil, errors.New(errUnexpectedObject)
 	}
+
+	return &TerraformExternal{
+		adapter: adapter.NewTerraformCli(l, providerConfig, tr),
+	}, nil
 }
 
 // TerraformExternal manages lifecycle of a Terraform managed resource by implementing
 // managed.ExternalClient interface.
 type TerraformExternal struct {
-	executor scheduler.Scheduler
+	adapter adapter.Adapter
 }
 
 // Observe does an observation for the Terraform managed resource.
 func (e *TerraformExternal) Observe(ctx context.Context, mg xpresource.Managed) (managed.ExternalObservation, error) {
-	tr, ok := mg.(resource.Terraformed)
+	_, ok := mg.(resource.Terraformed)
 	if !ok {
 		return managed.ExternalObservation{}, errors.New(errUnexpectedObject)
 	}
 
-	exists, err := e.executor.Exists(ctx, tr)
-	if err != nil {
-		return managed.ExternalObservation{}, errors.Wrap(err, "failed to check if exists")
-	}
-	if !exists {
-		return managed.ExternalObservation{
-			ResourceExists: false,
-		}, nil
-	}
-
-	lateInitialized, err := e.executor.LateInitialize(ctx, tr)
-	if err != nil {
-		return managed.ExternalObservation{}, errors.Wrap(err, "failed to late init")
-	}
-
-	upToDate, err := e.executor.IsUpToDate(ctx, tr)
-	if err != nil {
-		return managed.ExternalObservation{}, errors.Wrap(err, "failed to check if is up to date")
-	}
-
-	isReady, err := e.executor.IsReady(ctx, tr)
-	if err != nil {
-		return managed.ExternalObservation{}, errors.Wrap(err, "failed to check if ready")
-	}
-	if isReady {
-		mg.SetConditions(xpv1.Available())
-	} else {
-		mg.SetConditions(xpv1.Creating())
-	}
-
-	if err = e.executor.UpdateStatus(ctx, tr); err != nil {
-		return managed.ExternalObservation{}, errors.Wrap(err, "failed to update status")
-	}
-
-	conn, err := e.executor.GetConnectionDetails(ctx, tr)
-	if err != nil {
-		return managed.ExternalObservation{}, errors.Wrap(err, "failed to get connection details")
-	}
 	return managed.ExternalObservation{
-		ResourceExists:          true,
-		ResourceUpToDate:        upToDate,
-		ResourceLateInitialized: lateInitialized,
-		ConnectionDetails:       conn,
+		ResourceExists: true,
 	}, nil
 }
 
 // Create creates the Terraform managed resource.
 func (e *TerraformExternal) Create(ctx context.Context, mg xpresource.Managed) (managed.ExternalCreation, error) {
-	u, err := e.Update(ctx, mg)
+	tr, ok := mg.(resource.Terraformed)
+	if !ok {
+		return managed.ExternalCreation{}, errors.New(errUnexpectedObject)
+	}
+
+	cr, err := e.adapter.Create(ctx, tr)
+	if err != nil {
+		return managed.ExternalCreation{}, errors.Wrap(err, "failed to create")
+	}
+	if !cr.Completed {
+		return managed.ExternalCreation{}, errors.Wrap(err, "create in progress")
+	}
+
 	return managed.ExternalCreation{
 		ExternalNameAssigned: meta.GetExternalName(mg) != "",
-		ConnectionDetails:    u.ConnectionDetails,
+		ConnectionDetails:    cr.ConnectionDetails,
 	}, err
 }
 
@@ -100,12 +76,16 @@ func (e *TerraformExternal) Update(ctx context.Context, mg xpresource.Managed) (
 		return managed.ExternalUpdate{}, errors.New(errUnexpectedObject)
 	}
 
-	ar, err := e.executor.Apply(ctx, tr)
+	cr, err := e.adapter.Update(ctx, tr)
 	if err != nil {
-		return managed.ExternalUpdate{}, errors.Wrap(err, "failed to apply")
+		return managed.ExternalUpdate{}, errors.Wrap(err, "failed to update")
 	}
+	if !cr.Completed {
+		return managed.ExternalUpdate{}, errors.Wrap(err, "update in progress")
+	}
+
 	return managed.ExternalUpdate{
-		ConnectionDetails: ar.ConnectionDetails,
+		ConnectionDetails: cr.ConnectionDetails,
 	}, nil
 }
 
@@ -116,12 +96,13 @@ func (e *TerraformExternal) Delete(ctx context.Context, mg xpresource.Managed) e
 		return errors.New(errUnexpectedObject)
 	}
 
-	dr, err := e.executor.Delete(ctx, tr)
+	cr, err := e.adapter.Delete(ctx, tr)
 	if err != nil {
-		return errors.Wrap(err, "failed to delete")
+		return errors.Wrap(err, "failed to update")
 	}
-	if dr.Completed {
-		return nil
+	if !cr.Completed {
+		return errors.Wrap(err, "update in progress")
 	}
+
 	return errors.Errorf("still deleting")
 }
