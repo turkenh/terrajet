@@ -63,9 +63,9 @@ func (t *TerraformCli) Observe(ctx context.Context, tr resource.Terraformed) (Ob
 }
 
 func (t *TerraformCli) Create(ctx context.Context, tr resource.Terraformed) (CreateResult, error) {
-	attr, err := tr.GetParameters()
-
 	res := CreateResult{}
+
+	attr, err := tr.GetParameters()
 	if err != nil {
 		return res, errors.Wrap(err, "failed to get attributes")
 	}
@@ -115,26 +115,36 @@ func (t *TerraformCli) Update(ctx context.Context, tr resource.Terraformed) (Upd
 
 // Delete is a Terraform Cli implementation for Delete function of Adapter interface.
 func (t *TerraformCli) Delete(ctx context.Context, tr resource.Terraformed) (DeletionResult, error) {
-	tfcb := t.builderBase.
-		WithResourceBody([]byte(`{ 
-                "cidr_block": "10.0.0.0/16",
-  
-                "tags": {
-                    "Name": "alper-example-terraform"
-                }
-           }`))
+	res := DeletionResult{}
 
-	tfc, err := tfcb.BuildDeletionClient()
+	stEnc := meta.GetState(tr)
+	st, err := conversion.BuildStateV4(stEnc, nil)
 	if err != nil {
-		return DeletionResult{}, errors.Wrap(err, "cannot build create client")
+		return res, errors.Wrap(err, "cannot build state")
+	}
+
+	stRaw, err := st.Serialize()
+	if err != nil {
+		return res, errors.Wrap(err, "cannot serialize state")
+	}
+
+	attr, err := tr.GetParameters()
+	if err != nil {
+		return res, errors.Wrap(err, "failed to get attributes")
+	}
+
+	tfc, err := t.builderBase.WithState(stRaw).WithResourceBody(attr).BuildDeletionClient()
+	if err != nil {
+		return res, errors.Wrap(err, "cannot build delete client")
 	}
 
 	completed, err := tfc.Delete()
 	if err != nil {
-		return DeletionResult{}, errors.Wrap(err, "failed to delete")
+		return res, errors.Wrap(err, "failed to delete")
 	}
-	if completed {
-		return DeletionResult{}, nil
+	if !completed {
+		return res, nil
 	}
-	return DeletionResult{Completed: true}, nil
+	res.Completed = true
+	return res, nil
 }
