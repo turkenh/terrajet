@@ -80,7 +80,8 @@ func (e *External) Observe(ctx context.Context, mg xpresource.Managed) (managed.
 		return managed.ExternalObservation{}, errors.New(errUnexpectedObject)
 	}
 
-	if xpmeta.GetExternalName(tr) == "" {
+	if xpmeta.GetExternalName(tr) == "" && meta.GetState(tr) == "" {
+		tr.SetConditions(xpv1.Creating())
 		return managed.ExternalObservation{
 			ResourceExists: false,
 		}, nil
@@ -93,14 +94,18 @@ func (e *External) Observe(ctx context.Context, mg xpresource.Managed) (managed.
 
 	if !res.Completed {
 		// Observation is in progress, do nothing
-		tr.SetConditions(xpv1.Creating())
 		return managed.ExternalObservation{
 			ResourceExists:   true,
 			ResourceUpToDate: true,
 		}, nil
 	}
 
-	tr.SetConditions(xpv1.Available())
+	if !res.Exists {
+		tr.SetConditions(xpv1.Creating())
+	}
+	if res.UpToDate {
+		tr.SetConditions(xpv1.Available())
+	}
 
 	return managed.ExternalObservation{
 		ResourceExists:          res.Exists,
@@ -182,7 +187,7 @@ func (e *External) persistState(ctx context.Context, tr resource.Terraformed, st
 	// At one point, context deadline will be exceeded and we'll get out
 	// of the loop. In that case, we warn the user that the external resource
 	// might be leaked.
-	return errors.Wrap(retry.OnError(retry.DefaultRetry, xpresource.IsAPIError, func() error {
+	err := retry.OnError(retry.DefaultRetry, xpresource.IsAPIError, func() error {
 		nn := types.NamespacedName{Name: tr.GetName()}
 		if err := e.client.Get(ctx, nn, tr); err != nil {
 			return err
@@ -192,5 +197,7 @@ func (e *External) persistState(ctx context.Context, tr resource.Terraformed, st
 		}
 		meta.SetState(tr, state)
 		return e.client.Update(ctx, tr)
-	}), "cannot update resource state")
+	})
+
+	return errors.Wrap(err, "cannot update resource state")
 }

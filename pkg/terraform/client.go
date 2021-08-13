@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/json"
 
 	"github.com/crossplane/crossplane-runtime/pkg/logging"
+	xpmeta "github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 
 	"github.com/crossplane-contrib/terrajet/pkg/meta"
@@ -34,29 +35,58 @@ func NewClient(l logging.Logger, providerConfig []byte, tr resource.Terraformed)
 }
 
 func (t *Client) Observe(ctx context.Context, tr resource.Terraformed) (ObserveResult, error) {
-	// TODO(hasan): Need to get refreshed state once cli interface has that functionality
-	stEnc := meta.GetState(tr)
-	st, err := BuildStateV4(stEnc, nil)
+	res := ObserveResult{}
+
+	attr, err := tr.GetParameters()
+	if err != nil {
+		return res, errors.Wrap(err, "failed to get attributes")
+	}
+
+	var stRaw []byte
+	if meta.GetState(tr) != "" {
+		stEnc := meta.GetState(tr)
+		st, err := BuildStateV4(stEnc, nil)
+		if err != nil {
+			return res, errors.Wrap(err, "cannot build state")
+		}
+
+		stRaw, err = st.Serialize()
+		if err != nil {
+			return res, errors.Wrap(err, "cannot serialize state")
+		}
+	}
+
+	tfc, err := t.builderBase.WithState(stRaw).WithResourceBody(attr).BuildCreateClient()
+
+	tfres, err := tfc.Observe(xpmeta.GetExternalName(tr))
+
+	if !tfres.Completed {
+		return res, nil
+	}
+
+	res.Completed = tfres.Completed
+	res.Exists = tfres.Exists
+	res.UpToDate = tfres.UpToDate
+
+	newStateRaw := tfc.GetState()
+
+	newSt, err := ReadStateV4(newStateRaw)
 	if err != nil {
 		return ObserveResult{}, errors.Wrap(err, "cannot build state")
 	}
 
-	if err = tr.SetParameters(st.GetAttributes()); err != nil {
-		return ObserveResult{}, errors.Wrap(err, "cannot set parameters")
+	// TODO(hasan): Handle late initialization
+
+	if err = tr.SetObservation(newSt.GetAttributes()); err != nil {
+		return ObserveResult{}, errors.Wrap(err, "cannot set observation")
 	}
 
-	if err = tr.SetObservation(st.GetAttributes()); err != nil {
-		return ObserveResult{}, errors.Wrap(err, "cannot set parameters")
+	newStEnc, err := newSt.GetEncodedState()
+	if err != nil {
+		return ObserveResult{}, errors.Wrap(err, "cannot encode new state")
 	}
-
-	return ObserveResult{
-		Completed:         true,
-		State:             "",
-		ConnectionDetails: nil,
-		UpToDate:          true,
-		Exists:            true,
-		LateInitialized:   false,
-	}, nil
+	res.State = newStEnc
+	return res, nil
 }
 
 func (t *Client) Create(ctx context.Context, tr resource.Terraformed) (CreateResult, error) {
