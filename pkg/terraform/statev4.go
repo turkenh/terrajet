@@ -1,4 +1,4 @@
-package conversion
+package terraform
 
 import (
 	"encoding/base64"

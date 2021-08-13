@@ -15,6 +15,7 @@ type TerraformStateHandler interface {
 
 type TerraformMetadataProvider interface {
 	GetTerraformResourceType() string
+	GetTerraformResourceIdField() string
 }
 
 // Terraformed is a Kubernetes object representing a concrete terraform managed resource
