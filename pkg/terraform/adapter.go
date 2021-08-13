@@ -1,9 +1,9 @@
-package adapter
+package terraform
 
 import (
 	"context"
 
-	"github.com/crossplane-contrib/terrajet/pkg/resource"
+	"github.com/crossplane-contrib/terrajet/pkg/terraform/resource"
 
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 )
@@ -29,7 +29,10 @@ type CreateResult struct {
 	// Tells whether the apply operation is completed.
 	Completed bool
 	// Terraform state to persist
+	ExternalName string
+
 	State string
+
 	// Sensitive information that is available during creation/update.
 	ConnectionDetails managed.ConnectionDetails
 }

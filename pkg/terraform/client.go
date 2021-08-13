@@ -1,29 +1,26 @@
-package adapter
+package terraform
 
 import (
 	"context"
-
-	"github.com/crossplane-contrib/terrajet/pkg/meta"
-
-	"github.com/crossplane-contrib/terrajet/pkg/conversion"
-	"k8s.io/apimachinery/pkg/util/json"
+	"fmt"
 
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/util/json"
 
-	"github.com/crossplane-contrib/terrajet/pkg/tfcli"
 	"github.com/crossplane/crossplane-runtime/pkg/logging"
-
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 
-	"github.com/crossplane-contrib/terrajet/pkg/resource"
+	"github.com/crossplane-contrib/terrajet/pkg/meta"
+	"github.com/crossplane-contrib/terrajet/pkg/terraform/resource"
+	"github.com/crossplane-contrib/terrajet/pkg/tfcli"
 )
 
-// TerraformCli is an Adapter implementation for Terraform Cli
-type TerraformCli struct {
+// Client is an Adapter implementation for Terraform Cli
+type Client struct {
 	builderBase tfcli.Builder
 }
 
-func NewTerraformCli(l logging.Logger, providerConfig []byte, tr resource.Terraformed) *TerraformCli {
+func NewClient(l logging.Logger, providerConfig []byte, tr resource.Terraformed) *Client {
 	tfcb := tfcli.NewClientBuilder().
 		WithLogger(l).
 		WithResourceName(tr.GetName()).
@@ -31,15 +28,15 @@ func NewTerraformCli(l logging.Logger, providerConfig []byte, tr resource.Terraf
 		WithProviderConfiguration(providerConfig).
 		WithResourceType(tr.GetTerraformResourceType())
 
-	return &TerraformCli{
+	return &Client{
 		builderBase: tfcb,
 	}
 }
 
-func (t *TerraformCli) Observe(ctx context.Context, tr resource.Terraformed) (ObserveResult, error) {
+func (t *Client) Observe(ctx context.Context, tr resource.Terraformed) (ObserveResult, error) {
 	// TODO(hasan): Need to get refreshed state once cli interface has that functionality
 	stEnc := meta.GetState(tr)
-	st, err := conversion.BuildStateV4(stEnc, nil)
+	st, err := BuildStateV4(stEnc, nil)
 	if err != nil {
 		return ObserveResult{}, errors.Wrap(err, "cannot build state")
 	}
@@ -62,7 +59,7 @@ func (t *TerraformCli) Observe(ctx context.Context, tr resource.Terraformed) (Ob
 	}, nil
 }
 
-func (t *TerraformCli) Create(ctx context.Context, tr resource.Terraformed) (CreateResult, error) {
+func (t *Client) Create(ctx context.Context, tr resource.Terraformed) (CreateResult, error) {
 	res := CreateResult{}
 
 	attr, err := tr.GetParameters()
@@ -87,10 +84,26 @@ func (t *TerraformCli) Create(ctx context.Context, tr resource.Terraformed) (Cre
 	res.Completed = true
 
 	stRaw := tfc.GetState()
-	st, err := conversion.ReadStateV4(stRaw)
+	st, err := ReadStateV4(stRaw)
 	if err != nil {
 		return res, errors.Wrap(err, "cannot parse state")
 	}
+
+	stAttr := map[string]interface{}{}
+
+	if err = json.Unmarshal(st.GetAttributes(), &stAttr); err != nil {
+		return res, errors.Wrap(err, "cannot parse state attributes")
+	}
+
+	id, exists := stAttr[tr.GetTerraformResourceIdField()]
+	if !exists {
+		return res, errors.Wrap(err, fmt.Sprintf("no value for id field: %s", tr.GetTerraformResourceIdField()))
+	}
+	en, ok := id.(string)
+	if !ok {
+		return res, errors.Wrap(err, "id field is not a string")
+	}
+	res.ExternalName = en
 
 	if res.State, err = st.GetEncodedState(); err != nil {
 		return res, errors.Wrap(err, "cannot get encoded state")
@@ -109,16 +122,16 @@ func (t *TerraformCli) Create(ctx context.Context, tr resource.Terraformed) (Cre
 }
 
 // Update is a Terraform Cli implementation for Apply function of Adapter interface.
-func (t *TerraformCli) Update(ctx context.Context, tr resource.Terraformed) (UpdateResult, error) {
+func (t *Client) Update(ctx context.Context, tr resource.Terraformed) (UpdateResult, error) {
 	return UpdateResult{}, nil
 }
 
 // Delete is a Terraform Cli implementation for Delete function of Adapter interface.
-func (t *TerraformCli) Delete(ctx context.Context, tr resource.Terraformed) (DeletionResult, error) {
+func (t *Client) Delete(ctx context.Context, tr resource.Terraformed) (DeletionResult, error) {
 	res := DeletionResult{}
 
 	stEnc := meta.GetState(tr)
-	st, err := conversion.BuildStateV4(stEnc, nil)
+	st, err := BuildStateV4(stEnc, nil)
 	if err != nil {
 		return res, errors.Wrap(err, "cannot build state")
 	}
