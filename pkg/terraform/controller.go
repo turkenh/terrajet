@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/crossplane-contrib/terrajet/pkg/conversion"
+
 	"github.com/crossplane-contrib/terrajet/pkg/meta"
 	"github.com/crossplane-contrib/terrajet/pkg/terraform/resource"
 	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
@@ -69,53 +71,24 @@ func (c *connector) Connect(ctx context.Context, mg xpresource.Managed) (managed
 		return nil, errors.Wrap(err, "failed to get provider config")
 	}
 
-	return newExternal(c.kube, mg, pc, withLogger(c.logger))
-}
-
-// An externalOption configures an external.
-type externalOption func(*external)
-
-// withLogger specifies how the Reconciler should log messages.
-func withLogger(l logging.Logger) externalOption {
-	return func(e *external) {
-		e.log = l
-	}
-}
-
-// withRecorder specifies how the Reconciler should record events.
-func withRecorder(er event.Recorder) externalOption {
-	return func(e *external) {
-		e.record = er
-	}
-}
-
-// newExternal returns a terraform external client
-func newExternal(client client.Client, mg xpresource.Managed, providerConfig []byte, o ...externalOption) (*external, error) {
 	tr, ok := mg.(resource.Terraformed)
 	if !ok {
 		return nil, errors.New(errUnexpectedObject)
 	}
 
-	e := &external{
-		client: client,
-		log:    logging.NewNopLogger(),
+	return &external{
+		kube:   c.kube,
+		tf:     conversion.NewCli(c.logger, pc, tr),
+		log:    c.logger,
 		record: event.NewNopRecorder(),
-	}
-
-	for _, eo := range o {
-		eo(e)
-	}
-
-	e.tfClient = NewClient(e.log, providerConfig, tr)
-
-	return e, nil
+	}, nil
 }
 
 // external manages lifecycle of a Terraform managed resource by implementing
 // managed.ExternalClient interface.
 type external struct {
-	client   client.Client
-	tfClient Adapter
+	kube client.Client
+	tf   conversion.Adapter
 
 	log    logging.Logger
 	record event.Recorder
@@ -135,7 +108,7 @@ func (e *external) Observe(ctx context.Context, mg xpresource.Managed) (managed.
 		}, nil
 	}
 
-	res, err := e.tfClient.Observe(ctx, tr)
+	res, err := e.tf.Observe(ctx, tr)
 	if err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(err, "cannot check if resource exists")
 	}
@@ -148,9 +121,6 @@ func (e *external) Observe(ctx context.Context, mg xpresource.Managed) (managed.
 		}, nil
 	}
 
-	if !res.Exists {
-		tr.SetConditions(xpv1.Creating())
-	}
 	if res.UpToDate {
 		tr.SetConditions(xpv1.Available())
 	}
@@ -170,7 +140,7 @@ func (e *external) Create(ctx context.Context, mg xpresource.Managed) (managed.E
 		return managed.ExternalCreation{}, errors.New(errUnexpectedObject)
 	}
 
-	res, err := e.tfClient.Create(ctx, tr)
+	res, err := e.tf.Create(ctx, tr)
 	if err != nil {
 		return managed.ExternalCreation{}, errors.Wrap(err, "failed to create")
 	}
@@ -195,7 +165,7 @@ func (e *external) Update(ctx context.Context, mg xpresource.Managed) (managed.E
 		return managed.ExternalUpdate{}, errors.New(errUnexpectedObject)
 	}
 
-	res, err := e.tfClient.Update(ctx, tr)
+	res, err := e.tf.Update(ctx, tr)
 	if err != nil {
 		return managed.ExternalUpdate{}, errors.Wrap(err, "failed to update")
 	}
@@ -222,7 +192,7 @@ func (e *external) Delete(ctx context.Context, mg xpresource.Managed) error {
 		return errors.New(errUnexpectedObject)
 	}
 
-	_, err := e.tfClient.Delete(ctx, tr)
+	_, err := e.tf.Delete(ctx, tr)
 	if err != nil {
 		return errors.Wrap(err, "failed to delete")
 	}
@@ -237,14 +207,14 @@ func (e *external) persistState(ctx context.Context, tr resource.Terraformed, st
 	// might be leaked.
 	err := retry.OnError(retry.DefaultRetry, xpresource.IsAPIError, func() error {
 		nn := types.NamespacedName{Name: tr.GetName()}
-		if err := e.client.Get(ctx, nn, tr); err != nil {
+		if err := e.kube.Get(ctx, nn, tr); err != nil {
 			return err
 		}
 		if xpmeta.GetExternalName(tr) == "" {
 			xpmeta.SetExternalName(tr, externalName)
 		}
 		meta.SetState(tr, state)
-		return e.client.Update(ctx, tr)
+		return e.kube.Update(ctx, tr)
 	})
 
 	return errors.Wrap(err, "cannot update resource state")

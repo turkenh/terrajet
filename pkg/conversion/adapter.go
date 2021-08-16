@@ -1,4 +1,4 @@
-package terraform
+package conversion
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 // ObserveResult represents result of an observe operation
 type ObserveResult struct {
-	// Tells whether the apply operation is completed.
+	// Tells whether the observe operation is completed.
 	Completed bool
 	// Terraform state to persist
 	State string

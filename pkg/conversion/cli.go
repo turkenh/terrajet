@@ -1,4 +1,4 @@
-package terraform
+package conversion
 
 import (
 	"context"
@@ -16,12 +16,12 @@ import (
 	"github.com/crossplane-contrib/terrajet/pkg/tfcli"
 )
 
-// Client is an Adapter implementation for Terraform Cli
-type Client struct {
+// Cli is an Adapter implementation for Terraform Cli
+type Cli struct {
 	builderBase tfcli.Builder
 }
 
-func NewClient(l logging.Logger, providerConfig []byte, tr resource.Terraformed) *Client {
+func NewCli(l logging.Logger, providerConfig []byte, tr resource.Terraformed) *Cli {
 	tfcb := tfcli.NewClientBuilder().
 		WithLogger(l).
 		WithResourceName(tr.GetName()).
@@ -29,12 +29,12 @@ func NewClient(l logging.Logger, providerConfig []byte, tr resource.Terraformed)
 		WithProviderConfiguration(providerConfig).
 		WithResourceType(tr.GetTerraformResourceType())
 
-	return &Client{
+	return &Cli{
 		builderBase: tfcb,
 	}
 }
 
-func (t *Client) Observe(ctx context.Context, tr resource.Terraformed) (ObserveResult, error) {
+func (t *Cli) Observe(ctx context.Context, tr resource.Terraformed) (ObserveResult, error) {
 	res := ObserveResult{}
 
 	attr, err := tr.GetParameters()
@@ -89,7 +89,7 @@ func (t *Client) Observe(ctx context.Context, tr resource.Terraformed) (ObserveR
 	return res, nil
 }
 
-func (t *Client) Create(ctx context.Context, tr resource.Terraformed) (CreateResult, error) {
+func (t *Cli) Create(ctx context.Context, tr resource.Terraformed) (CreateResult, error) {
 	res := CreateResult{}
 
 	attr, err := tr.GetParameters()
@@ -152,12 +152,12 @@ func (t *Client) Create(ctx context.Context, tr resource.Terraformed) (CreateRes
 }
 
 // Update is a Terraform Cli implementation for Apply function of Adapter interface.
-func (t *Client) Update(ctx context.Context, tr resource.Terraformed) (UpdateResult, error) {
+func (t *Cli) Update(ctx context.Context, tr resource.Terraformed) (UpdateResult, error) {
 	return UpdateResult{}, nil
 }
 
 // Delete is a Terraform Cli implementation for Delete function of Adapter interface.
-func (t *Client) Delete(ctx context.Context, tr resource.Terraformed) (DeletionResult, error) {
+func (t *Cli) Delete(ctx context.Context, tr resource.Terraformed) (DeletionResult, error) {
 	res := DeletionResult{}
 
 	stEnc := meta.GetState(tr)
