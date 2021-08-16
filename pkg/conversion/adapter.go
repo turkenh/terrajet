@@ -3,9 +3,9 @@ package conversion
 import (
 	"context"
 
-	"github.com/crossplane-contrib/terrajet/pkg/terraform/resource"
-
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
+
+	"github.com/crossplane-contrib/terrajet/pkg/terraform/resource"
 )
 
 // ObserveResult represents result of an observe operation

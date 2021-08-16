@@ -66,19 +66,26 @@ type connector struct {
 }
 
 func (c *connector) Connect(ctx context.Context, mg xpresource.Managed) (managed.ExternalClient, error) {
-	pc, err := c.providerConfig(ctx, c.kube, mg)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to get provider config")
-	}
-
 	tr, ok := mg.(resource.Terraformed)
 	if !ok {
 		return nil, errors.New(errUnexpectedObject)
 	}
 
+	// TODO(hasan): create and pass the implementation of tfcli builder once available
+	/*	pc, err := c.providerConfig(ctx, c.kube, mg)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get provider config")
+		}
+		tfcb := tfcli.NewClientBuilder().
+			WithLogger(c.logger).
+			WithResourceName(tr.GetName()).
+			WithHandle(string(tr.GetUID())).
+			WithProviderConfiguration(pc).
+			WithResourceType(tr.GetTerraformResourceType())*/
+
 	return &external{
 		kube:   c.kube,
-		tf:     conversion.NewCli(c.logger, pc, tr),
+		tf:     conversion.NewCli(c.logger, tr, nil),
 		log:    c.logger,
 		record: event.NewNopRecorder(),
 	}, nil
