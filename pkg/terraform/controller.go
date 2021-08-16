@@ -2,53 +2,101 @@ package terraform
 
 import (
 	"context"
-
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
-
-	"github.com/pkg/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/crossplane/crossplane-runtime/pkg/event"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	xpmeta "github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
-	xpresource "github.com/crossplane/crossplane-runtime/pkg/resource"
+	"time"
 
 	"github.com/crossplane-contrib/terrajet/pkg/meta"
 	"github.com/crossplane-contrib/terrajet/pkg/terraform/resource"
+	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
+	xpmeta "github.com/crossplane/crossplane-runtime/pkg/meta"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/pkg/errors"
+
+	"github.com/crossplane/crossplane-runtime/pkg/event"
+	"github.com/crossplane/crossplane-runtime/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
+	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
+	xpresource "github.com/crossplane/crossplane-runtime/pkg/resource"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 const (
 	errUnexpectedObject = "The managed resource is not an Terraformed resource"
 )
 
-// An ExternalOption configures an External.
-type ExternalOption func(*External)
+// ProviderConfigFn is a function that returns provider specific configuration
+// like provider credentials used to connect to cloud APIs.
+type ProviderConfigFn func(ctx context.Context, client client.Client, mg xpresource.Managed) ([]byte, error)
 
-// WithLogger specifies how the Reconciler should log messages.
-func WithLogger(l logging.Logger) ExternalOption {
-	return func(e *External) {
+func SetupController(mgr ctrl.Manager, l logging.Logger, obj client.Object, of schema.GroupVersionKind, pcFn ProviderConfigFn) error {
+	name := managed.ControllerName(of.GroupKind().String())
+
+	rl := ratelimiter.NewDefaultProviderRateLimiter(ratelimiter.DefaultProviderRPS)
+	o := controller.Options{
+		RateLimiter: ratelimiter.NewDefaultManagedRateLimiter(rl),
+	}
+
+	r := managed.NewReconciler(mgr,
+		xpresource.ManagedKind(of),
+		managed.WithPollInterval(15*time.Second),
+		managed.WithInitializers(),
+		managed.WithExternalConnecter(&connector{kube: mgr.GetClient(), providerConfig: pcFn, logger: l}),
+		managed.WithLogger(l.WithValues("controller", name)),
+		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))))
+
+	return ctrl.NewControllerManagedBy(mgr).
+		Named(name).
+		WithOptions(o).
+		For(obj).
+		Complete(r)
+}
+
+type connector struct {
+	kube           client.Client
+	providerConfig ProviderConfigFn
+	logger         logging.Logger
+}
+
+func (c *connector) Connect(ctx context.Context, mg xpresource.Managed) (managed.ExternalClient, error) {
+	pc, err := c.providerConfig(ctx, c.kube, mg)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get provider config")
+	}
+
+	return newExternal(c.kube, mg, pc, withLogger(c.logger))
+}
+
+// An externalOption configures an external.
+type externalOption func(*external)
+
+// withLogger specifies how the Reconciler should log messages.
+func withLogger(l logging.Logger) externalOption {
+	return func(e *external) {
 		e.log = l
 	}
 }
 
-// WithRecorder specifies how the Reconciler should record events.
-func WithRecorder(er event.Recorder) ExternalOption {
-	return func(e *External) {
+// withRecorder specifies how the Reconciler should record events.
+func withRecorder(er event.Recorder) externalOption {
+	return func(e *external) {
 		e.record = er
 	}
 }
 
-// NewExternal returns a terraform external client
-func NewExternal(client client.Client, mg xpresource.Managed, providerConfig []byte, o ...ExternalOption) (*External, error) {
+// newExternal returns a terraform external client
+func newExternal(client client.Client, mg xpresource.Managed, providerConfig []byte, o ...externalOption) (*external, error) {
 	tr, ok := mg.(resource.Terraformed)
 	if !ok {
 		return nil, errors.New(errUnexpectedObject)
 	}
 
-	e := &External{
+	e := &external{
 		client: client,
 		log:    logging.NewNopLogger(),
 		record: event.NewNopRecorder(),
@@ -63,9 +111,9 @@ func NewExternal(client client.Client, mg xpresource.Managed, providerConfig []b
 	return e, nil
 }
 
-// External manages lifecycle of a Terraform managed resource by implementing
+// external manages lifecycle of a Terraform managed resource by implementing
 // managed.ExternalClient interface.
-type External struct {
+type external struct {
 	client   client.Client
 	tfClient Adapter
 
@@ -74,7 +122,7 @@ type External struct {
 }
 
 // Observe does an observation for the Terraform managed resource.
-func (e *External) Observe(ctx context.Context, mg xpresource.Managed) (managed.ExternalObservation, error) {
+func (e *external) Observe(ctx context.Context, mg xpresource.Managed) (managed.ExternalObservation, error) {
 	tr, ok := mg.(resource.Terraformed)
 	if !ok {
 		return managed.ExternalObservation{}, errors.New(errUnexpectedObject)
@@ -116,7 +164,7 @@ func (e *External) Observe(ctx context.Context, mg xpresource.Managed) (managed.
 }
 
 // Create creates the Terraform managed resource.
-func (e *External) Create(ctx context.Context, mg xpresource.Managed) (managed.ExternalCreation, error) {
+func (e *external) Create(ctx context.Context, mg xpresource.Managed) (managed.ExternalCreation, error) {
 	tr, ok := mg.(resource.Terraformed)
 	if !ok {
 		return managed.ExternalCreation{}, errors.New(errUnexpectedObject)
@@ -141,7 +189,7 @@ func (e *External) Create(ctx context.Context, mg xpresource.Managed) (managed.E
 }
 
 // Update updates the Terraform managed resource.
-func (e *External) Update(ctx context.Context, mg xpresource.Managed) (managed.ExternalUpdate, error) {
+func (e *external) Update(ctx context.Context, mg xpresource.Managed) (managed.ExternalUpdate, error) {
 	tr, ok := mg.(resource.Terraformed)
 	if !ok {
 		return managed.ExternalUpdate{}, errors.New(errUnexpectedObject)
@@ -168,7 +216,7 @@ func (e *External) Update(ctx context.Context, mg xpresource.Managed) (managed.E
 }
 
 // Delete deletes the Terraform managed resource.
-func (e *External) Delete(ctx context.Context, mg xpresource.Managed) error {
+func (e *external) Delete(ctx context.Context, mg xpresource.Managed) error {
 	tr, ok := mg.(resource.Terraformed)
 	if !ok {
 		return errors.New(errUnexpectedObject)
@@ -182,7 +230,7 @@ func (e *External) Delete(ctx context.Context, mg xpresource.Managed) error {
 	return nil
 }
 
-func (e *External) persistState(ctx context.Context, tr resource.Terraformed, state, externalName string) error {
+func (e *external) persistState(ctx context.Context, tr resource.Terraformed, state, externalName string) error {
 	// We will retry in all cases where the error comes from the api-server.
 	// At one point, context deadline will be exceeded and we'll get out
 	// of the loop. In that case, we warn the user that the external resource
