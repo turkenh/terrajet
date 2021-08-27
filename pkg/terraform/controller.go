@@ -18,6 +18,7 @@ package terraform
 
 import (
 	"context"
+	"time"
 
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -61,6 +62,7 @@ func SetupController(mgr ctrl.Manager, l logging.Logger, obj client.Object, of s
 	r := managed.NewReconciler(mgr,
 		xpresource.ManagedKind(of),
 		managed.WithInitializers(),
+		managed.WithPollInterval(10*time.Second),
 		managed.WithExternalConnecter(&connector{kube: mgr.GetClient(), providerConfig: pcFn, logger: l}),
 		managed.WithLogger(l.WithValues("controller", name)),
 		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))))
@@ -91,6 +93,8 @@ func (c *connector) Connect(ctx context.Context, mg xpresource.Managed) (managed
 	opts := []tfcli.ClientOption{
 		tfcli.WithLogger(c.logger),
 		tfcli.WithProviderConfiguration(pc),
+		tfcli.WithProviderSource("hashicorp/aws"),
+		tfcli.WithProviderVersion("~> 3.0"),
 	}
 
 	tfCli, err := conversion.BuildClientForResource(ctx, opts, tr)
